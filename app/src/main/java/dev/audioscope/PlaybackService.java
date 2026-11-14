@@ -7,6 +7,7 @@ import android.media.*;
 import android.media.session.*;
 import android.os.*;
 import java.io.File;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** One player shared by every inline card, with system media controls. */
 public final class PlaybackService extends Service {
@@ -15,6 +16,10 @@ public final class PlaybackService extends Service {
   public static volatile boolean playing, ready;
   public static volatile int duration, position;
   public static volatile float speed = 1;
+  
+  // IDEA #5: Memory to store the seeker position for each file path
+  public static final ConcurrentHashMap<String, Integer> positionMemory = new ConcurrentHashMap<>();
+
   private MediaPlayer player;
   private MediaSession session;
   private AudioFocusRequest focus;
@@ -85,16 +90,28 @@ public final class PlaybackService extends Service {
       String path = selected.getCanonicalPath();
       if (!path.startsWith(ScopeApp.sessions().getCanonicalPath() + File.separator)
           || !selected.isFile()) throw new IllegalArgumentException("Recording file unavailable");
+      
       if (file != null && file.equals(selected) && player != null) {
         if (playing) pause();
         else resume();
         return;
       }
+
+      // IDEA #5: Save the position of the OLD file before switching
+      if (file != null && player != null) {
+          positionMemory.put(file.getAbsolutePath(), position);
+      }
+
       generation++;
       int token = generation;
       releasePlayer();
       file = selected;
-      duration = position = 0;
+      
+      // IDEA #5: Restore the position of the NEW file if it exists in memory
+      Integer savedPos = positionMemory.get(selected.getAbsolutePath());
+      duration = 0;
+      position = (savedPos != null) ? savedPos : 0;
+      
       ready = playing = false;
       player = new MediaPlayer();
       player.setAudioAttributes(
@@ -103,19 +120,28 @@ public final class PlaybackService extends Service {
               .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
               .build());
       player.setDataSource(path);
+      
       player.setOnPreparedListener(
           p -> {
             if (token != generation) return;
             duration = p.getDuration();
+            // IDEA #5: Jump the player to the restored position
+            if (position > 0) {
+                p.seekTo(position);
+            }
             ready = true;
             resume();
           });
+          
       player.setOnCompletionListener(
           p -> {
             playing = false;
             position = duration;
+            // IDEA #5: Update memory when track finishes
+            if (file != null) positionMemory.put(file.getAbsolutePath(), position);
             updateNotification();
           });
+          
       player.setOnErrorListener(
           (p, w, e) -> {
             Notices.error(
@@ -173,6 +199,8 @@ public final class PlaybackService extends Service {
       try {
         player.pause();
         position = player.getCurrentPosition();
+        // IDEA #5: Save position when paused
+        if (file != null) positionMemory.put(file.getAbsolutePath(), position);
       } catch (Exception ignored) {
       }
     playing = false;
@@ -182,6 +210,8 @@ public final class PlaybackService extends Service {
   public void seek(int ms) {
     if (player == null || !ready) return;
     position = Math.max(0, Math.min(duration, ms));
+    // IDEA #5: Save position when seeking
+    if (file != null) positionMemory.put(file.getAbsolutePath(), position);
     player.seekTo(position, MediaPlayer.SEEK_CLOSEST);
     updateNotification();
   }
@@ -308,4 +338,4 @@ public final class PlaybackService extends Service {
     stopForeground(STOP_FOREGROUND_REMOVE);
     super.onDestroy();
   }
-}
+      }
