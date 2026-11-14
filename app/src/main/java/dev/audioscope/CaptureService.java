@@ -594,6 +594,27 @@ public class CaptureService extends Service {
     }
     if (!tmp.renameTo(new File(session, "session.json")))
       throw new IOException("Manifest replace failed");
+
+    // --- IDEA #2: BACKUP SESSION JSON TO PUBLIC FOLDER ---
+    if (complete) {
+        try {
+            File publicFolder = new File(Environment.getExternalStorageDirectory(), "Recordings/AudioScope");
+            if (publicFolder.exists() || publicFolder.mkdirs()) {
+                File publicJson = new File(publicFolder, session.getName() + "_session.json");
+                try (FileInputStream in = new FileInputStream(new File(session, "session.json"));
+                     FileOutputStream out = new FileOutputStream(publicJson)) {
+                    byte[] buf = new byte[8192];
+                    int len;
+                    while ((len = in.read(buf)) > 0) {
+                        out.write(buf, 0, len);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            ScopeApp.log("WARN", "Failed to copy session.json to public: " + ShellBridge.root(e));
+        }
+    }
+    // -----------------------------------------------------
   }
 
   private boolean inCall() {
@@ -1239,4 +1260,4 @@ public class CaptureService extends Service {
       return j;
     }
   }
-}
+        }
