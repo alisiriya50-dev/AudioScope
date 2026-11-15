@@ -110,12 +110,13 @@ public final class LibraryPanel {
       if (wavs == null || Arrays.stream(wavs).noneMatch(f -> f.length() > 44)) continue;
       LinearLayout c = Ui.card(activity);
       
-      JSONObject manifest;
+      JSONObject mTemp;
       try {
-        manifest = new JSONObject(Exports.read(new File(folder, "session.json")));
+        mTemp = new JSONObject(Exports.read(new File(folder, "session.json")));
       } catch (Exception ignored) {
-        manifest = new JSONObject();
+        mTemp = new JSONObject();
       }
+      final JSONObject manifest = mTemp;
       
       TextView title =
           text(manifest.optString("label", folder.getName().replace('_', ' ')), 17, Ui.INK);
