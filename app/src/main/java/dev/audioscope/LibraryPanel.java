@@ -23,13 +23,20 @@ public final class LibraryPanel {
   private final LinearLayout host;
   private final List<PlayerRow> players = new ArrayList<>();
   private boolean clock24;
+  
+  // State for Live Sync
+  private boolean isLiveSyncOn = false;
+  private PlayerRow activeTrack = null;
+  private MaterialButton liveSyncBtn;
 
   private static final class PlayerRow {
     File file;
     MaterialButton play, speed;
     PlaybackWaveform wave;
-    TextView elapsed;
+    TextView elapsed, titleView;
     long duration;
+    long currentMs = 0; // Tracks position for non-playing tracks
+    CheckBox syncCheckbox;
   }
 
   public LibraryPanel(android.app.Activity a, Actions x) {
@@ -60,6 +67,8 @@ public final class LibraryPanel {
     clock24 = TimeDisplay.twentyFour();
     host.removeAllViews();
     players.clear();
+    activeTrack = null;
+    
     TextView heading = text(selectedSession == null ? "Sessions" : "Recording", 20, Ui.INK);
     heading.setTypeface(null, Typeface.BOLD);
     LinearLayout top = Ui.row(activity);
@@ -182,9 +191,147 @@ public final class LibraryPanel {
       right.leftMargin = dp(4);
       buttons.addView(files, right);
       c.addView(buttons);
+
+      // --- IDEA #3, #4, #6: Sync and Delete Buttons ---
+      LinearLayout syncRow = Ui.row(activity);
+      liveSyncBtn = Ui.button(activity, "Live Sync: " + (isLiveSyncOn ? "ON" : "OFF"), false, () -> {
+          isLiveSyncOn = !isLiveSyncOn;
+          liveSyncBtn.setText("Live Sync: " + (isLiveSyncOn ? "ON" : "OFF"));
+          liveSyncBtn.setTextColor(isLiveSyncOn ? Ui.INK : Ui.MUTED);
+      });
+      MaterialButton syncSourcesBtn = Ui.button(activity, "Sync Sources", false, () -> {
+          if (activeTrack != null) {
+              syncOthers(null, (int) activeTrack.currentMs);
+          }
+      });
+      MaterialButton deleteBtn = Ui.button(activity, "Delete", false, () -> showDeleteDialog(folder, manifest));
+
+      LinearLayout.LayoutParams lp1 = new LinearLayout.LayoutParams(0, -2, 1);
+      lp1.setMargins(dp(3), 0, dp(3), 0);
+      LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(0, -2, 1);
+      lp2.setMargins(dp(3), 0, dp(3), 0);
+      LinearLayout.LayoutParams lp3 = new LinearLayout.LayoutParams(0, -2, 1);
+      lp3.setMargins(dp(3), 0, dp(3), 0);
+      
+      syncRow.addView(liveSyncBtn, lp1);
+      syncRow.addView(syncSourcesBtn, lp2);
+      syncRow.addView(deleteBtn, lp3);
+      c.addView(syncRow);
+      // ------------------------------------------------
+      
       host.addView(c);
+      host.addView(bookmarksView(manifest)); // IDEA #1: Clickable Bookmarks
       host.addView(SessionMetadata.view(activity, folder, manifest));
     }
+  }
+
+  // --- IDEA #1: Clickable Bookmarks ---
+  private LinearLayout bookmarksView(JSONObject manifest) {
+      LinearLayout card = Ui.card(activity);
+      TextView title = text("Bookmarks", 18, Ui.INK);
+      title.setTypeface(null, Typeface.BOLD);
+      card.addView(title);
+
+      JSONArray markers = manifest.optJSONArray("markers");
+      if (markers == null || markers.length() == 0) {
+          card.addView(text("No bookmarks were saved for this session.", 13, Ui.MUTED));
+          return card;
+      }
+
+      boolean hasBookmarks = false;
+      for (int i = 0; i < markers.length(); i++) {
+          JSONObject marker = markers.optJSONObject(i);
+          if (marker == null) continue;
+          String label = marker.optString("label", "");
+          if (label.isEmpty() || "session_start".equals(label)) continue;
+          hasBookmarks = true;
+
+          long atMs = marker.optLong("atMs", 0);
+          MaterialButton button = Ui.button(activity, label + "  ·  " + clock(atMs), false, () -> {
+              // Seeks ALL tracks to the bookmark timestamp
+              for (PlayerRow r : players) {
+                  r.currentMs = atMs;
+                  r.wave.progress((float) atMs / Math.max(1, r.duration));
+                  r.elapsed.setText(clock(atMs));
+                  if (r.file.equals(PlaybackService.file) && PlaybackService.instance != null) {
+                      PlaybackService.instance.seek((int) atMs);
+                  }
+              }
+          });
+          LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
+          p.setMargins(0, dp(4), 0, dp(4));
+          card.addView(button, p);
+      }
+
+      if (!hasBookmarks) {
+          card.addView(text("No user-created bookmarks were saved.", 13, Ui.MUTED));
+      }
+      return card;
+  }
+  // -----------------------------------
+
+  // --- IDEA #6: Safe Delete Function ---
+  private void showDeleteDialog(File folder, JSONObject manifest) {
+      File[] files = folder.listFiles((d, n) -> n.endsWith(".wav") || n.endsWith(".m4a"));
+      if (files == null || files.length == 0) return;
+
+      List<File> fileList = Arrays.asList(files);
+      String[] items = new String[fileList.size()];
+      boolean[] checkedItems = new boolean[fileList.size()];
+      for (int i = 0; i < fileList.size(); i++) {
+          items[i] = fileList.get(i).getName();
+      }
+
+      new AlertDialog.Builder(activity)
+          .setTitle("Select files to DELETE")
+          .setMultiChoiceItems(items, checkedItems, (dialog, which, isChecked) -> checkedItems[which] = isChecked)
+          .setPositiveButton("Delete Selected", (dialog, which) -> {
+              ScopeApp.IO.execute(() -> {
+                  for (int i = 0; i < items.length; i++) {
+                      if (checkedItems[i]) {
+                          new File(folder, items[i]).delete();
+                      }
+                  }
+                  // If all audio files are deleted, clean up session.json and finish
+                  File[] remaining = folder.listFiles((d, n) -> n.endsWith(".wav") || n.endsWith(".m4a"));
+                  if (remaining == null || remaining.length == 0) {
+                      new File(folder, "session.json").delete();
+                      ScopeApp.MAIN.post(() -> {
+                          Toast.makeText(activity, "Session deleted", Toast.LENGTH_SHORT).show();
+                          activity.finish(); // Go back to session list
+                      });
+                  } else {
+                      ScopeApp.MAIN.post(() -> {
+                          Toast.makeText(activity, "Files deleted", Toast.LENGTH_SHORT).show();
+                          render();
+                      });
+                  }
+              });
+          })
+          .setNegativeButton("Cancel", null)
+          .show();
+  }
+  // -------------------------------------
+
+  private void setActiveTrack(PlayerRow r) {
+      activeTrack = r;
+      for (PlayerRow p : players) {
+          if (p.titleView != null) p.titleView.setTextColor(Ui.INK);
+      }
+      if (r.titleView != null) r.titleView.setTextColor(ThemePalette.accent(activity));
+  }
+
+  private void syncOthers(PlayerRow master, int ms) {
+      for (PlayerRow p : players) {
+          if (p != master && p.syncCheckbox != null && p.syncCheckbox.isChecked()) {
+              p.currentMs = ms;
+              p.wave.progress((float) ms / Math.max(1, p.duration));
+              p.elapsed.setText(clock(ms));
+              if (p.file.equals(PlaybackService.file) && PlaybackService.instance != null) {
+                  PlaybackService.instance.seek(ms);
+              }
+          }
+      }
   }
 
   private void open(File folder) {
@@ -220,13 +367,25 @@ public final class LibraryPanel {
         if (track != null && wav.getName().equals(track.optString("file")))
           label = track.optString("title", label);
       }
-    c.addView(
-        text(
+
+    LinearLayout titleRow = Ui.row(activity);
+    titleRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+    if (selectedSession != null) {
+        r.syncCheckbox = new CheckBox(activity);
+        titleRow.addView(r.syncCheckbox);
+    }
+    r.titleView = text(
             label + " · " + (r.file.equals(m4a) ? "M4A" : r.file.equals(opus) ? "Opus" : "WAV"),
             14,
-            Ui.INK));
+            Ui.INK);
+    titleRow.addView(r.titleView, new LinearLayout.LayoutParams(0, -2, 1));
+    c.addView(titleRow);
+
     LinearLayout line = Ui.row(activity);
-    r.play = Ui.icon(activity, "▶", "Play " + label, () -> PlaybackService.play(activity, r.file));
+    r.play = Ui.icon(activity, "▶", "Play " + label, () -> {
+        setActiveTrack(r);
+        PlaybackService.play(activity, r.file);
+    });
     line.addView(r.play, new LinearLayout.LayoutParams(dp(48), dp(48)));
     r.wave =
         new PlaybackWaveform(
@@ -234,6 +393,10 @@ public final class LibraryPanel {
             wav,
             fraction -> {
               int ms = (int) (r.duration * fraction);
+              r.currentMs = ms;
+              setActiveTrack(r);
+              if (isLiveSyncOn) syncOthers(r, ms);
+              
               if (PlaybackService.instance != null && r.file.equals(PlaybackService.file))
                 PlaybackService.instance.seek(ms);
               else {
@@ -308,9 +471,14 @@ public final class LibraryPanel {
       r.play.setText(current && PlaybackService.playing ? "Ⅱ" : "▶");
       r.play.setContentDescription(
           (current && PlaybackService.playing ? "Pause " : "Play ") + r.file.getName());
+      
+      if (current) {
+          r.currentMs = PlaybackService.position;
+      }
+      
       r.wave.progress(
-          current ? (float) PlaybackService.position / Math.max(1, PlaybackService.duration) : 0);
-      r.elapsed.setText(current ? clock(PlaybackService.position) : "0:00");
+          current ? (float) PlaybackService.position / Math.max(1, PlaybackService.duration) : (float) r.currentMs / Math.max(1, r.duration));
+      r.elapsed.setText(current ? clock(PlaybackService.position) : clock(r.currentMs));
       r.speed.setText(PlaybackService.speed + "×");
     }
   }
@@ -441,4 +609,4 @@ public final class LibraryPanel {
     long s = ms / 1000;
     return String.format(Locale.US, "%d:%02d", s / 60, s % 60);
   }
-}
+        }
