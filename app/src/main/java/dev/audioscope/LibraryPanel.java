@@ -27,7 +27,6 @@ public final class LibraryPanel {
   // State for Live Sync
   private boolean isLiveSyncOn = false;
   private PlayerRow activeTrack = null;
-  private MaterialButton liveSyncBtn;
 
   private static final class PlayerRow {
     File file;
@@ -35,7 +34,7 @@ public final class LibraryPanel {
     PlaybackWaveform wave;
     TextView elapsed, titleView;
     long duration;
-    long currentMs = 0; // Tracks position for non-playing tracks
+    long currentMs = 0; 
     CheckBox syncCheckbox;
   }
 
@@ -110,11 +109,14 @@ public final class LibraryPanel {
       File[] wavs = folder.listFiles((d, n) -> n.endsWith(".wav"));
       if (wavs == null || Arrays.stream(wavs).noneMatch(f -> f.length() > 44)) continue;
       LinearLayout c = Ui.card(activity);
-      JSONObject manifest = new JSONObject();
+      
+      JSONObject manifest;
       try {
         manifest = new JSONObject(Exports.read(new File(folder, "session.json")));
       } catch (Exception ignored) {
+        manifest = new JSONObject();
       }
+      
       TextView title =
           text(manifest.optString("label", folder.getName().replace('_', ' ')), 17, Ui.INK);
       title.setTypeface(null, Typeface.BOLD);
@@ -194,11 +196,14 @@ public final class LibraryPanel {
 
       // --- IDEA #3, #4, #6: Sync and Delete Buttons ---
       LinearLayout syncRow = Ui.row(activity);
-      liveSyncBtn = Ui.button(activity, "Live Sync: " + (isLiveSyncOn ? "ON" : "OFF"), false, () -> {
+      
+      final MaterialButton[] liveSyncBtnRef = new MaterialButton[1];
+      liveSyncBtnRef[0] = Ui.button(activity, "Live Sync: " + (isLiveSyncOn ? "ON" : "OFF"), false, () -> {
           isLiveSyncOn = !isLiveSyncOn;
-          liveSyncBtn.setText("Live Sync: " + (isLiveSyncOn ? "ON" : "OFF"));
-          liveSyncBtn.setTextColor(isLiveSyncOn ? Ui.INK : Ui.MUTED);
+          liveSyncBtnRef[0].setText("Live Sync: " + (isLiveSyncOn ? "ON" : "OFF"));
+          liveSyncBtnRef[0].setTextColor(isLiveSyncOn ? Ui.INK : Ui.MUTED);
       });
+      
       MaterialButton syncSourcesBtn = Ui.button(activity, "Sync Sources", false, () -> {
           if (activeTrack != null) {
               syncOthers(null, (int) activeTrack.currentMs);
@@ -213,7 +218,7 @@ public final class LibraryPanel {
       LinearLayout.LayoutParams lp3 = new LinearLayout.LayoutParams(0, -2, 1);
       lp3.setMargins(dp(3), 0, dp(3), 0);
       
-      syncRow.addView(liveSyncBtn, lp1);
+      syncRow.addView(liveSyncBtnRef[0], lp1);
       syncRow.addView(syncSourcesBtn, lp2);
       syncRow.addView(deleteBtn, lp3);
       c.addView(syncRow);
